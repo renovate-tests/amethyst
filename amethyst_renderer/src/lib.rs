@@ -89,6 +89,7 @@ pub use crate::{
 mod error;
 pub mod mouse;
 pub mod pipe;
+pub mod encoding;
 
 #[macro_use]
 mod macros;
