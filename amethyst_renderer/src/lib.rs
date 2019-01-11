@@ -86,10 +86,9 @@ pub use crate::{
     visibility::{Visibility, VisibilitySortingSystem},
 };
 
-mod error;
+pub mod encoding;
 pub mod mouse;
 pub mod pipe;
-pub mod encoding;
 
 #[macro_use]
 mod macros;
@@ -100,6 +99,7 @@ mod cam;
 mod color;
 mod config;
 mod debug_drawing;
+mod error;
 mod formats;
 mod hidden;
 mod hide_system;
