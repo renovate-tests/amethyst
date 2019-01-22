@@ -20,6 +20,6 @@ pub use self::{
         ShaderInput, ShaderInputType,
     },
     query::{EncoderStorage, EncoderStorageBuilder, EncodingQuery, EvaluatedQuery},
-    resolver::{LayoutResolveCache, LayoutResolver, ShaderResolver},
+    resolver::{FnLayoutResolver, LayoutResolver, PipelinesResolver},
     stream_encoder::{AnyEncoder, EncType, StreamEncoder},
 };

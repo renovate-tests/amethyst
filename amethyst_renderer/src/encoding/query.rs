@@ -2,10 +2,10 @@ use super::{
     buffer::EncodeBufferBuilder,
     pipeline::{EncoderPipeline, EncodingLayout, LayoutProp},
     stream_encoder::{AnyEncoder, StreamEncoder},
-    LayoutResolver,
+    PipelinesResolver,
 };
-use amethyst_assets::{AssetStorage, Handle};
-use amethyst_core::specs::{Component, Entities, Join, ReadStorage, SystemData};
+use crate::encoding::resolver::IntoPipelinesResolver;
+use amethyst_core::specs::{Entities, Join, ReadStorage, SystemData};
 use fnv::FnvHashMap;
 use log::warn;
 use shred::Resources;
@@ -69,13 +69,11 @@ impl EncoderStorage {
 /// Every query has one “central” component `T` that must be present on entities of interest.
 /// This allows to avoid unintentional multiple renders by many passes.
 #[derive(PartialEq, Eq, Hash, Debug, Clone)]
-pub struct EncodingQuery<T, R>
+pub struct EncodingQuery<R>
 where
-    T: Component,
-    R: LayoutResolver<T>,
+    R: PipelinesResolver,
 {
-    layout_resolver: R,
-    marker: PhantomData<T>,
+    pipeline_resolver: R,
 }
 
 /// A query that was already `evaluate`d. Holds a precomputed lists of entities matching a set of pipelines.
@@ -85,62 +83,35 @@ pub struct EvaluatedQuery {
     pipelines: Vec<EncoderPipeline>,
 }
 
-impl<T, R> EncodingQuery<T, R>
+impl<R> EncodingQuery<R>
 where
-    T: Component + Send + Sync,
-    R: LayoutResolver<T>,
+    R: PipelinesResolver,
 {
     /// Create new query for given component type.
     /// Must provide a way to resolve layouts from that component.
     ///
-    /// The required `LayoutResolver` type is implemented for closures
+    /// The required `PipelinesResolver` type is implemented for closures
     /// that extracts the shader handle from a component.
     /// ```rust,ignore
     /// let query = EncodingQuery::new(|component: &MyComponent| component.shader.clone());
     /// ```
     ///
-    /// More complex `LayoutResolver` type can be implemented as needed,
+    /// More complex `PipelinesResolver` type can be implemented as needed,
     /// but then the implementer must ensure that the returned layout
     /// is memoized where applicable, because every returned layout instance
     /// will be encoded in a separate pipeline.
-    pub fn new(layout_resolver: R) -> Self {
+    pub fn new<I: IntoPipelinesResolver<Resolver = R>>(pipeline_resolver: I) -> Self {
         EncodingQuery {
-            layout_resolver,
-            marker: PhantomData,
+            pipeline_resolver: pipeline_resolver.into(),
         }
     }
 
     /// Evaluate the query on world, finding the right entities to encode later.
     /// This step can be cached, as long as central entities list wes not modified
     /// between evaluation and encoding.
-    pub fn evaluate(&self, res: &Resources) -> EvaluatedQuery {
-        let mut pipelines: FnvHashMap<Handle<EncodingLayout>, EncoderPipeline> = Default::default();
-        let component_storage = <ReadStorage<'_, T>>::fetch(res);
-        let entities = <Entities<'_>>::fetch(res);
-        for (component, entity) in (&component_storage, &entities).join() {
-            // Ignore unsuccessful resolutions. This usually means that the shader
-            // asset was not loaded yet.
-            if let Some(layout_handle) = self.layout_resolver.resolve(res, component) {
-                use std::collections::hash_map::Entry;
-                match pipelines.entry(layout_handle) {
-                    Entry::Occupied(mut entry) => {
-                        entry.get_mut().add_id(entity.id());
-                    }
-                    Entry::Vacant(entry) => {
-                        let storage = res.fetch::<AssetStorage<_>>();
-                        let layout = storage
-                            .get(entry.key())
-                            .expect("layouts are computed assets which are inserted immediately on creation");
-
-                        let mut pipeline = EncoderPipeline::with_layout(layout.clone());
-                        pipeline.add_id(entity.id());
-                        entry.insert(pipeline);
-                    }
-                }
-            }
-        }
+    pub fn evaluate(&mut self, res: &Resources) -> EvaluatedQuery {
         EvaluatedQuery {
-            pipelines: pipelines.into_iter().map(|(_, value)| value).collect(),
+            pipelines: self.pipeline_resolver.resolve(res),
         }
     }
 }
@@ -168,14 +139,17 @@ impl EvaluatedQuery {
         let mut start = 0;
         for pipeline in &self.pipelines {
             let ref mut sub_buffer = buffer[start..start + pipeline.ubo_size()];
+            dbg!(pipeline.ubo_size());
             start += pipeline.ubo_size();
+            let indices = pipeline.indices();
             let layout = pipeline.layout();
+            let bitset = pipeline.bitset();
 
             if let Some(encoders) = encoder_storage.encoders_for_props(&layout.props) {
                 let buffer_builder = EncodeBufferBuilder::create(layout, sub_buffer);
                 for encoder in encoders {
                     unsafe {
-                        encoder.encode(pipeline.bitset(), res, &buffer_builder);
+                        encoder.encode(bitset, &indices, res, &buffer_builder);
                     }
                 }
             } else {

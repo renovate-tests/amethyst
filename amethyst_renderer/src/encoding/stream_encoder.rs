@@ -30,6 +30,7 @@ pub trait StreamEncoder<'a> {
     /// there is exactly one `buffer.push` call.
     unsafe fn encode<'b>(
         bitset: &BitSet,
+        indices: &Vec<usize>,
         res: &'a Resources,
         buffer_builder: &EncodeBufferBuilder<'b>,
     );
@@ -58,6 +59,7 @@ where
 {
     marker: PhantomData<(I, O)>,
     bitset: &'b BitSet,
+    indices: &'b Vec<usize>,
     input_data: &'j <I as EncodingData<'a>>::SystemData,
     buffer: B,
 }
@@ -70,12 +72,14 @@ where
 {
     fn new(
         bitset: &'b BitSet,
+        indices: &'b Vec<usize>,
         input_data: &'j <I as EncodingData<'a>>::SystemData,
         buffer: B,
     ) -> Self {
         Self {
             marker: PhantomData,
             bitset,
+            indices,
             input_data,
             buffer,
         }
@@ -94,9 +98,13 @@ where
             <<I as EncodingData<'a>>::FetchedData as FetchedData<'j>>::Ref,
         ) -> <O::EncodedType as EncodingValue>::OptValue,
     {
-        for idx in self.bitset {
-            let components = <I as EncodingDef>::get_data(self.input_data, idx);
-            self.buffer.push(O::resolve(mapper(components)));
+        let mut i = 0;
+        for entity_id in self.bitset {
+            let write_index: usize = self.indices[i];
+            i += 1;
+            let components = <I as EncodingDef>::get_data(self.input_data, entity_id);
+            self.buffer
+                .write(O::resolve(mapper(components)), write_index);
         }
 
         LoopResult(())
@@ -119,13 +127,18 @@ impl<'a, T: LoopingStreamEncoder<'a>> StreamEncoder<'a> for T {
 
     unsafe fn encode<'b>(
         bitset: &BitSet,
+        indices: &Vec<usize>,
         res: &'a Resources,
         buffer_builder: &EncodeBufferBuilder<'b>,
     ) {
         let buffer = buffer_builder.build::<T::Properties>();
         let (input_data, system_data) = SystemData::fetch(res);
-        let encode_loop =
-            EncodeLoopImpl::<T::Components, T::Properties, _>::new(bitset, &input_data, buffer);
+        let encode_loop = EncodeLoopImpl::<T::Components, T::Properties, _>::new(
+            bitset,
+            indices,
+            &input_data,
+            buffer,
+        );
         T::encode(encode_loop, system_data);
     }
 }
@@ -159,6 +172,7 @@ pub trait AnyEncoder: Any + Send + Sync {
     unsafe fn encode<'b>(
         &self,
         bitset: &BitSet,
+        indices: &Vec<usize>,
         res: &Resources,
         buffer_builder: &EncodeBufferBuilder<'b>,
     );
@@ -200,10 +214,11 @@ impl<T: for<'a> StreamEncoder<'a> + 'static> AnyEncoder for AnyEncoderImpl<T> {
     unsafe fn encode<'b>(
         &self,
         bitset: &BitSet,
+        indices: &Vec<usize>,
         res: &Resources,
         buffer_builder: &EncodeBufferBuilder<'b>,
     ) {
-        T::encode(bitset, res, buffer_builder);
+        T::encode(bitset, indices, res, buffer_builder);
     }
 }
 

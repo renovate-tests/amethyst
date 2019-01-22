@@ -32,11 +32,6 @@ pub trait EncodingData<'a> {
 
 pub trait EncodingDefItem {
     type Fetched: Component;
-    const BOUND: bool;
-}
-
-pub trait IterableEncodingDefItem<'j> {
-    type IterType: 'j;
 }
 
 pub trait EncodingDef
@@ -57,10 +52,6 @@ where
 
 impl<A: Component> EncodingDefItem for Encode<A> {
     type Fetched = A;
-    const BOUND: bool = true;
-}
-impl<'j, A: Component + 'j> IterableEncodingDefItem<'j> for Encode<A> {
-    type IterType = &'j A;
 }
 
 macro_rules! impl_encoding_set {

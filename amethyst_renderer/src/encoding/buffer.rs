@@ -15,7 +15,7 @@ use std::{
 pub trait EncodeBuffer<T: EncodingValue> {
     /// Push encoded values to the buffer. Must be called exactly once for every entry
     /// in the provided encoding iterator.
-    fn push(&mut self, data: T::Value);
+    fn write(&mut self, data: T::Value, index: usize);
 }
 
 struct BinBufferStride<'a> {
@@ -27,8 +27,7 @@ struct BinBufferStride<'a> {
 }
 
 impl<'a> BinBufferStride<'a> {
-    #[allow(dead_code)]
-    /// TODO docs
+    /// Create a list of strides for given buffer matching all separate entries in the layout
     pub fn from_layout<'l>(
         slice: &'a mut [u8],
         layout: &'l EncodingLayout,
@@ -61,7 +60,12 @@ impl<'a> BinBufferStride<'a> {
     }
 
     pub fn get_mut(&mut self, idx: usize) -> &mut [u8] {
-        debug_assert!((idx as isize) < self.elem_count);
+        debug_assert!(
+            (idx as isize) < self.elem_count,
+            "strided buffer out of bounds: idx: {}, count: {}",
+            idx,
+            self.elem_count
+        );
         unsafe {
             let write_ptr = self.begin.offset(self.stride * idx as isize);
             std::slice::from_raw_parts_mut(write_ptr, self.contiguous_count)
@@ -71,29 +75,25 @@ impl<'a> BinBufferStride<'a> {
 
 pub struct BufferWriter<'a, 'b, T: EncodingValue> {
     strides: Vec<RefMut<'b, BinBufferStride<'a>>>,
-    write_idx: usize,
     marker: PhantomData<T>,
 }
 
 impl<'a, 'b, T: EncodingValue> BufferWriter<'a, 'b, T> {
     /// TODO docs
-    #[allow(dead_code)]
     fn new(strides: Vec<RefMut<'b, BinBufferStride<'a>>>) -> Self {
         Self {
             strides,
-            write_idx: 0,
             marker: PhantomData,
         }
     }
 }
 
 impl<'a, 'b, T: EncodingValue> EncodeBuffer<T> for BufferWriter<'a, 'b, T> {
-    fn push(&mut self, data: T::Value) {
-        data.for_each(|idx, bytes| {
-            let dst = self.strides[idx].get_mut(self.write_idx);
+    fn write(&mut self, data: T::Value, index: usize) {
+        data.for_each_buffer(|stride_idx, bytes| {
+            let dst = self.strides[stride_idx].get_mut(index);
             dst.copy_from_slice(bytes);
         });
-        self.write_idx += 1;
     }
 }
 

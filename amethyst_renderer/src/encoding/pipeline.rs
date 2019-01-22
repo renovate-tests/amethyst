@@ -2,6 +2,7 @@ use super::EncodedProp;
 use amethyst_assets::{Asset, Handle, ProcessingState, Result};
 use amethyst_core::specs::{world::Index, VecStorage};
 use hibitset::BitSet;
+use std::cell::{Ref, RefCell};
 
 /// A set of shader properties at specific offsets.
 /// The type should guarantee that all properties are non-overlapping.
@@ -14,24 +15,24 @@ pub struct EncodingLayout {
     pub padded_size: u32,
 }
 
+pub struct EncodingLayout2 {
+    buffers: Vec<EncodingBufferLayout>,
+    attributes: Vec<EncodedProp>,
+}
+
+pub struct EncodingBufferLayout {
+    /// A list of all properties at specific offset
+    pub props: Vec<LayoutProp>,
+    /// Total number of bytes required for the structure, including padding
+    pub padded_size: u32,
+}
+
 impl EncodingLayout {
     /// Extract encoding layout from shader
     pub fn from_shader(shader: &Shader) -> Self {
         // TODO: cheating here, needs a real shader with proper
         // spirv-reflect data to implement that properly
         shader.mock_layout.clone()
-    }
-}
-
-// note: this should probably be considered a "computed asset"
-impl Asset for EncodingLayout {
-    const NAME: &'static str = "EncodingLayout";
-    type HandleStorage = VecStorage<Handle<Self>>;
-    type Data = EncodingLayout;
-}
-impl Into<Result<ProcessingState<EncodingLayout>>> for EncodingLayout {
-    fn into(self) -> Result<ProcessingState<EncodingLayout>> {
-        Ok(ProcessingState::Loaded(self))
     }
 }
 
@@ -75,6 +76,9 @@ pub struct EncoderPipeline {
     layout: EncodingLayout,
     entities: BitSet,
     entities_count: usize,
+    batch_counts: Vec<usize>,
+    batches: Vec<usize>,
+    indices: RefCell<Vec<usize>>,
 }
 
 impl EncoderPipeline {
@@ -85,6 +89,9 @@ impl EncoderPipeline {
             layout: layout.clone(),
             entities: BitSet::new(),
             entities_count: 0,
+            batch_counts: Vec::with_capacity(32),
+            batches: Vec::with_capacity(1024),
+            indices: RefCell::new(vec![]),
         }
     }
 
@@ -104,28 +111,54 @@ impl EncoderPipeline {
         &self.entities
     }
 
-    /// Add entity id to the pipeline.
-    #[inline]
-    pub fn add_id(&mut self, id: Index) {
-        if !self.entities.contains(id) {
-            unsafe { self.add_id_unchecked(id) }
+    /// Retreive write index vector, which holds the encoding write position
+    /// for every entity in the pipeline. Vector is keyed by the iteration index,
+    /// not by the entity id.
+    pub fn indices(&self) -> Ref<'_, Vec<usize>> {
+        if self.indices.borrow().len() == self.batches.len() {
+            self.indices.borrow()
+        } else {
+            let mut batch_indices = Vec::with_capacity(self.batch_counts.len());
+            let mut total = 0;
+            for count in &self.batch_counts {
+                batch_indices.push(total);
+                total += *count;
+            }
+
+            {
+                let indices = &mut self.indices.borrow_mut();
+                indices.clear();
+                indices.extend(self.batches.iter().map(|&batch| {
+                    let idx = batch_indices[batch];
+                    batch_indices[batch] = idx + 1;
+                    idx
+                }));
+            }
+
+            self.indices.borrow()
         }
     }
 
     /// Add entity id to the pipeline.
-    ///
-    /// Unsafe because user must ensure that the entity is not already present.
     #[inline]
-    pub unsafe fn add_id_unchecked(&mut self, id: Index) {
-        self.entities.add(id);
-        self.entities_count += 1;
+    pub fn add_id(&mut self, id: Index, batch: usize) {
+        if !self.entities.add(id) {
+            if self.batch_counts.len() <= batch {
+                self.batch_counts.resize(batch + 1, 0);
+            }
+            self.batch_counts[batch] += 1;
+            self.batches.push(batch);
+            self.entities_count += 1;
+        }
     }
 
     /// Remove entity id from the pipeline.
     #[inline]
     pub fn remove_id(&mut self, id: Index) {
-        if self.entities.contains(id) {
-            self.entities.remove(id);
+        if self.entities.remove(id) {
+            let batch = self.batches[id as usize];
+            self.batch_counts[batch] -= 1;
+            self.batches.remove(id as usize);
             self.entities_count -= 1;
         }
     }
@@ -133,6 +166,9 @@ impl EncoderPipeline {
     /// Remove all associated entities from the pipeline.
     pub fn clear(&mut self) {
         self.entities.clear();
-        self.entities_count = 1;
+        self.batch_counts.clear();
+        self.batches.clear();
+        self.indices.get_mut().clear();
+        self.entities_count = 0;
     }
 }

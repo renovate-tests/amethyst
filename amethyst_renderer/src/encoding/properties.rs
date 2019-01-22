@@ -13,7 +13,7 @@ pub enum InputKind {
 /// Implementer must guarantee that the type's memory layout is strictly defined.
 /// Usually that means that the implementing struct needs a `#[repr(C)]`
 /// and all types of it's fields are also defined in that way.
-pub unsafe trait ResolvedEncoding: Sized {
+pub unsafe trait BufferEncoding: Sized {
     /// Convert a structure with known layout into a slice of bytes.
     fn as_bytes(&self) -> &[u8] {
         let ptr = self as *const Self as *const u8;
@@ -22,22 +22,22 @@ pub unsafe trait ResolvedEncoding: Sized {
     }
 }
 
-unsafe impl ResolvedEncoding for () {}
-unsafe impl ResolvedEncoding for u8 {}
-unsafe impl ResolvedEncoding for u16 {}
-unsafe impl ResolvedEncoding for u32 {}
-unsafe impl ResolvedEncoding for u64 {}
-unsafe impl ResolvedEncoding for i8 {}
-unsafe impl ResolvedEncoding for i16 {}
-unsafe impl ResolvedEncoding for i32 {}
-unsafe impl ResolvedEncoding for i64 {}
-unsafe impl ResolvedEncoding for f32 {}
-unsafe impl ResolvedEncoding for f64 {}
-unsafe impl ResolvedEncoding for bool {}
-unsafe impl ResolvedEncoding for char {}
-unsafe impl<T: ResolvedEncoding> ResolvedEncoding for [T; 2] {}
-unsafe impl<T: ResolvedEncoding> ResolvedEncoding for [T; 4] {}
-unsafe impl<T: ResolvedEncoding> ResolvedEncoding for [T; 8] {}
+unsafe impl BufferEncoding for () {}
+unsafe impl BufferEncoding for u8 {}
+unsafe impl BufferEncoding for u16 {}
+unsafe impl BufferEncoding for u32 {}
+unsafe impl BufferEncoding for u64 {}
+unsafe impl BufferEncoding for i8 {}
+unsafe impl BufferEncoding for i16 {}
+unsafe impl BufferEncoding for i32 {}
+unsafe impl BufferEncoding for i64 {}
+unsafe impl BufferEncoding for f32 {}
+unsafe impl BufferEncoding for f64 {}
+unsafe impl BufferEncoding for bool {}
+unsafe impl BufferEncoding for char {}
+unsafe impl<T: BufferEncoding> BufferEncoding for [T; 2] {}
+unsafe impl<T: BufferEncoding> BufferEncoding for [T; 4] {}
+unsafe impl<T: BufferEncoding> BufferEncoding for [T; 8] {}
 
 /// Represents a single shader uniform or attribute input.
 pub trait ShaderInputType {
@@ -47,7 +47,7 @@ pub trait ShaderInputType {
     const KIND: InputKind;
     /// Type level data representation that's produced in the encoding phase by `StreamEncoder`.
     /// Note that this type must have a strictly defined layout that matches what GPU will expect.
-    type Repr: ResolvedEncoding;
+    type Repr: BufferEncoding;
 
     /// Retreive the size of type in uniform buffer.
     /// Returns 0 for non-uniform data.
@@ -63,26 +63,23 @@ pub trait ShaderInputType {
 /// Allows visiting the u8 representation of all separate parts of encoded value.
 /// The visiting is always performed in the same order as defined in the `Properties` of an encoder.
 pub trait IterableEncoding: Sized {
-    /// Return a count of iterations
-    fn count() -> usize;
     #[doc(hidden)]
-    fn for_each_offsetted<F: FnMut(usize, &[u8])>(self, idx: usize, f: F) -> F;
+    fn for_each_buffer_internal<F: FnMut(usize, &[u8])>(self, idx: usize, f: F) -> (usize, F) {
+        (idx, f)
+    }
+
     /// Iterate over all encoded buffers in given returned value
     #[inline(always)]
-    fn for_each(self, f: impl FnMut(usize, &[u8])) {
-        self.for_each_offsetted(0, f);
+    fn for_each_buffer(self, f: impl FnMut(usize, &[u8])) {
+        self.for_each_buffer_internal(0, f);
     }
 }
 
-impl<T: ResolvedEncoding> IterableEncoding for T {
+impl<T: BufferEncoding> IterableEncoding for T {
     #[inline(always)]
-    fn count() -> usize {
-        1
-    }
-    #[inline(always)]
-    fn for_each_offsetted<F: FnMut(usize, &[u8])>(self, idx: usize, mut f: F) -> F {
+    fn for_each_buffer_internal<F: FnMut(usize, &[u8])>(self, idx: usize, mut f: F) -> (usize, F) {
         f(idx, self.as_bytes());
-        f
+        (idx + 1, f)
     }
 }
 
@@ -122,7 +119,6 @@ macro_rules! define_shader_inputs {
 }
 
 // TODO: support more types, like boolean vectors or any scalars
-// TODO: address alignment
 define_shader_inputs! {
     /// A vector of 4 single precision floats
     Vec4 EncVec4 => { Uniform, [f32; 4] },
@@ -275,19 +271,9 @@ macro_rules! impl_tuple_properties {
         where $($from: IterableEncoding),*,
         {
             #[inline(always)]
-            fn count() -> usize {
-                let count = 0;
-                $(let count = count + $from::count();)*
-                count
-            }
-
-            #[inline(always)]
-            fn for_each_offsetted<FN: FnMut(usize, &[u8])>(self, _idx: usize, f: FN) -> FN {
-                $(
-                    let f = self.$idx.for_each_offsetted(_idx, f);
-                    let _idx = _idx + $from::count();
-                )*
-                f
+            fn for_each_buffer_internal<FN: FnMut(usize, &[u8])>(self, idx: usize, f: FN) -> (usize, FN) {
+                $(let (idx, f) = self.$idx.for_each_buffer_internal(idx, f);)*
+                (idx, f)
             }
         }
 

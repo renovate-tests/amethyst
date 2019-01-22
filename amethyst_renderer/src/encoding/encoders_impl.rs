@@ -50,6 +50,12 @@ impl<'a> LoopingStreamEncoder<'a> for SpriteTransformEncoder {
                 let pos =
                     transform.0 * Vector4::new(-sprite.offsets[0], -sprite.offsets[1], 0.0, 1.0);
                 (Some(pos.into()), Some(dir_x.into()), Some(dir_y.into()))
+            // let t = transform.0;
+            // (
+            //     Some([t[0], t[1], t[2], t[3]]),
+            //     Some([t[4], t[5], t[6], t[7]]),
+            //     Some([t[8], t[9], t[10], t[11]]),
+            // )
             } else {
                 (None, None, None)
             }
