@@ -1,4 +1,6 @@
-use super::{EncProperty, EncVec4};
+use super::{EncProperty, EncTexture, EncVec4};
+use crate::Texture;
+use amethyst_assets::Handle;
 
 /// Shader attribute `vec4 tint`
 pub struct TintProperty;
@@ -37,5 +39,15 @@ impl EncProperty for DirYProperty {
     type EncodedType = EncVec4;
     fn fallback() -> [f32; 4] {
         [0.0, 0.0, 0.0, 1.0]
+    }
+}
+
+/// Shader attribute `sampler2D albedo`
+pub struct AlbedoProperty;
+impl EncProperty for AlbedoProperty {
+    const PROPERTY: &'static str = "albedo";
+    type EncodedType = EncTexture;
+    fn fallback() -> Handle<Texture> {
+        panic!("Missing texture");
     }
 }

@@ -34,6 +34,7 @@ pub use crate::{
     color::Rgba,
     config::DisplayConfig,
     debug_drawing::{DebugLines, DebugLinesComponent},
+    encoding::{DataDrivenRenderGroup, *},
     formats::{
         build_mesh_with_combo, create_mesh_asset, create_texture_asset, BmpFormat,
         ComboMeshCreator, GraphicsPrefab, ImageData, JpgFormat, MaterialPrefab, MeshCreator,

@@ -3,16 +3,20 @@ use amethyst_core::specs::{
 };
 
 /// A read-only access to a component storage. Component types listed in the list of `Encoder`s
-/// on a `StreamEncoder` trait are used for scheduling the encoding for rendering.
+/// on a `InstanceEncoder` trait are used for scheduling the encoding for rendering.
 ///
 /// Constrained in the same way as `ReadStorage`. You can't use `WriteStorage` with the same inner type at the same time.
 pub struct Encode<A: Component>(std::marker::PhantomData<A>);
 
 /// A helper trait that allows to retreive the reference type for encoder's components type.
-/// Necessary to avoid tying a specific lifeitme to `EncoderData` trait.
+/// Necessary to avoid tying a specific lifeitme to `EncodingDefItem` trait.
 pub trait FetchedData<'j> {
     /// The type that adds the expected reference and lifetime to the components tuple
     type Ref;
+}
+
+impl<'j> FetchedData<'j> for () {
+    type Ref = ();
 }
 
 /// A helper trait that allows retreiving type information and data from storages
@@ -28,6 +32,14 @@ pub trait EncodingData<'a> {
         data: &'j Self::SystemData,
         index: Index,
     ) -> <Self::FetchedData as FetchedData<'j>>::Ref;
+}
+
+impl<'a> EncodingData<'a> for () {
+    type SystemData = ();
+    type FetchedData = ();
+    fn get_data<'j>(_: &'j (), _: Index) -> <Self::FetchedData as FetchedData<'j>>::Ref {
+        ()
+    }
 }
 
 pub trait EncodingDefItem {
@@ -49,6 +61,8 @@ where
         <Self as EncodingData<'a>>::get_data(data, index)
     }
 }
+
+impl EncodingDef for () {}
 
 impl<A: Component> EncodingDefItem for Encode<A> {
     type Fetched = A;

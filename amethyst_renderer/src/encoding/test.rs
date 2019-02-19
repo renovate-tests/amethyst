@@ -1,4 +1,4 @@
-use super::{EncProperty, EncodingLayout, EncodingQuery, FnLayoutResolver, Shader};
+use super::{EncProperty, EncodingLayout, EncodingQuery, FnPipelineResolver, Shader};
 use crate::{Sprite, SpriteRender, SpriteSheet};
 use amethyst_assets::{AssetStorage, Handle, Loader, Processor};
 use amethyst_core::{
@@ -275,7 +275,7 @@ pub fn test_querying() {
             .build(),
     );
 
-    let mut query = EncodingQuery::new(FnLayoutResolver::new(
+    let mut query = EncodingQuery::new(FnPipelineResolver::new(
         |c: &TestCentralComponent, _, res: &shred::Resources| {
             let storage = res.fetch::<AssetStorage<_>>();
             storage

@@ -1,11 +1,49 @@
-// use crate::{Mesh, Texture};
-// use amethyst_assets::Handle;
-use std::iter::{once, Chain, Once};
+use crate::Texture;
+use amethyst_assets::Handle;
+use std::iter::{empty, once, Chain, Empty, Once};
 
-#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
-pub enum InputKind {
-    Uniform,
-    Attribute,
+/// A wrapper type for returned descriptor writes
+///
+/// This type is currently a mock to allow encoding
+/// handles for gpu resources, as there are no real descriptors yet
+/// TODO: use real descriptors once rendy lands
+#[derive(Debug)]
+pub enum EncodedDescriptor {
+    /// Descriptor with texture binding
+    Texture(Handle<Texture>),
+}
+
+/// Marker trait for values that can be encoded in per-instance encoders.
+/// Required to prevent scenarios where descriptors are encoded and later ignored.
+pub trait PerInstanceValue {}
+impl<T> PerInstanceValue for T
+where
+    T: ShaderInputType,
+    T::Repr: BufferEncoding,
+{
+}
+
+/// Marker trait for encoder properties that can be declared in per-instance encoders.
+pub trait EncPerInstanceProperties: EncProperties {
+    /// A value that is the result of an per-instance encoding.
+    type EncodedInstType: EncodingValue + PerInstanceValue;
+    /// A version of EncodingValue::resolve that works on local `PerInstanceValue` version
+    fn resolve_inst(
+        optional: <Self::EncodedInstType as EncodingValue>::OptValue,
+    ) -> <Self::EncodedInstType as EncodingValue>::Value;
+}
+impl<T> EncPerInstanceProperties for T
+where
+    T: EncProperties,
+    T::EncodedType: PerInstanceValue,
+{
+    type EncodedInstType = T::EncodedType;
+
+    fn resolve_inst(
+        optional: <Self::EncodedInstType as EncodingValue>::OptValue,
+    ) -> <Self::EncodedInstType as EncodingValue>::Value {
+        T::resolve(optional)
+    }
 }
 
 /// Trait that provides a conversion of encoding result into a byte slice.
@@ -36,7 +74,11 @@ unsafe impl BufferEncoding for f64 {}
 unsafe impl BufferEncoding for bool {}
 unsafe impl BufferEncoding for char {}
 unsafe impl<T: BufferEncoding> BufferEncoding for [T; 2] {}
+unsafe impl<T: BufferEncoding> BufferEncoding for [T; 3] {}
 unsafe impl<T: BufferEncoding> BufferEncoding for [T; 4] {}
+unsafe impl<T: BufferEncoding> BufferEncoding for [T; 5] {}
+unsafe impl<T: BufferEncoding> BufferEncoding for [T; 6] {}
+unsafe impl<T: BufferEncoding> BufferEncoding for [T; 7] {}
 unsafe impl<T: BufferEncoding> BufferEncoding for [T; 8] {}
 
 /// Represents a single shader uniform or attribute input.
@@ -44,64 +86,102 @@ pub trait ShaderInputType {
     /// A type of encoded data
     const TY: ShaderInput;
     /// Binding destination
-    const KIND: InputKind;
-    /// Type level data representation that's produced in the encoding phase by `StreamEncoder`.
+    /// Type level data representation that's produced in the encoding phase by `InstanceEncoder`.
     /// Note that this type must have a strictly defined layout that matches what GPU will expect.
-    type Repr: BufferEncoding;
-
-    /// Retreive the size of type in uniform buffer.
-    /// Returns 0 for non-uniform data.
-    fn ubo_size() -> usize {
-        if Self::KIND == InputKind::Uniform {
-            std::mem::size_of::<Self::Repr>()
-        } else {
-            0
-        }
-    }
+    type Repr: IterableEncoding;
+    // /// Retreive the size of data in binary buffer.
+    // fn ubo_size() -> usize;
 }
 
 /// Allows visiting the u8 representation of all separate parts of encoded value.
 /// The visiting is always performed in the same order as defined in the `Properties` of an encoder.
 pub trait IterableEncoding: Sized {
+    /// Retreive the size of type in uniform buffer.
+    fn ubo_size() -> usize {
+        0
+    }
+    /// Iterate over all encoded buffers in given returned value
+    #[inline(always)]
+    fn for_each_buffer(&self, f: impl FnMut(usize, &[u8])) {
+        self.for_each_buffer_internal(0, f);
+    }
+
     #[doc(hidden)]
-    fn for_each_buffer_internal<F: FnMut(usize, &[u8])>(self, idx: usize, f: F) -> (usize, F) {
+    #[inline(always)]
+    fn for_each_buffer_internal<F: FnMut(usize, &[u8])>(&self, idx: usize, f: F) -> (usize, F) {
         (idx, f)
+    }
+
+    /// Retreive the number of returned descriptors.
+    #[inline(always)]
+    fn num_descriptors() -> usize {
+        0
     }
 
     /// Iterate over all encoded buffers in given returned value
     #[inline(always)]
-    fn for_each_buffer(self, f: impl FnMut(usize, &[u8])) {
-        self.for_each_buffer_internal(0, f);
+    fn for_each_descriptor(self, f: impl FnMut(usize, EncodedDescriptor)) {
+        self.for_each_descriptor_internal(0, f);
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    fn for_each_descriptor_internal<F>(self, idx: usize, f: F) -> (usize, F)
+    where
+        F: FnMut(usize, EncodedDescriptor),
+    {
+        (idx, f)
     }
 }
 
 impl<T: BufferEncoding> IterableEncoding for T {
     #[inline(always)]
-    fn for_each_buffer_internal<F: FnMut(usize, &[u8])>(self, idx: usize, mut f: F) -> (usize, F) {
+    fn ubo_size() -> usize {
+        std::mem::size_of::<T>()
+    }
+
+    #[inline(always)]
+    fn for_each_buffer_internal<F: FnMut(usize, &[u8])>(&self, idx: usize, mut f: F) -> (usize, F) {
         f(idx, self.as_bytes());
         (idx + 1, f)
     }
 }
 
+impl IterableEncoding for Handle<Texture> {
+    #[inline(always)]
+    fn num_descriptors() -> usize {
+        1
+    }
+    #[inline(always)]
+    fn for_each_descriptor_internal<F>(self, idx: usize, mut f: F) -> (usize, F)
+    where
+        F: FnMut(usize, EncodedDescriptor),
+    {
+        f(idx, EncodedDescriptor::Texture(self));
+        (idx + 1, f)
+    }
+}
+
 macro_rules! define_shader_inputs {
-    ($($(#[$meta:meta])* $variant:ident $typename:ident => { $kind:ident, $repr:ty }),*,) => {
+    ($($(#[$meta:meta])* $typename:ident => $repr:ty),*,) => {
 
         /// An enum of all supported uniform or attribute types
         #[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
         pub enum ShaderInput {
             $(
                 $(#[$meta])*
-                $variant,
+                $typename,
             )*
         }
 
         impl ShaderInput {
-            /// Retreive the size of data structure for uniform properties.
-            /// Returns 0 for non-uniform data.
+            /// Retreive the size of type in uniform buffer.
+            /// Returns 0 for data outside of the binary buffer.
             pub fn ubo_size(&self) -> usize {
-                match self {
-                    $(ShaderInput::$variant => $typename::ubo_size(),)*
-                }
+                unimplemented!()
+                // match self {
+                //     $(ShaderInput::$typename => $typename::ubo_size(),)*
+                // }
             }
         }
 
@@ -109,8 +189,7 @@ macro_rules! define_shader_inputs {
             $(#[$meta])*
             pub struct $typename;
             impl ShaderInputType for $typename {
-                const TY: ShaderInput = ShaderInput::$variant;
-                const KIND: InputKind = InputKind::$kind;
+                const TY: ShaderInput = ShaderInput::$typename;
                 type Repr = $repr;
             }
         )*
@@ -121,29 +200,25 @@ macro_rules! define_shader_inputs {
 // TODO: support more types, like boolean vectors or any scalars
 define_shader_inputs! {
     /// A vector of 4 single precision floats
-    Vec4 EncVec4 => { Uniform, [f32; 4] },
+    EncVec4 => [f32; 4],
     /// A vector of 2 single precision floats
-    Vec2 EncVec2 => { Uniform, [f32; 2] },
+    EncVec2 => [f32; 2],
     /// A matrix of 4x4 single precision floats
-    Mat4x4 EncMat4x4 => { Uniform, [[f32; 4]; 4] },
+    EncMat4x4 => [[f32; 4]; 4],
     /// A vector of 4 signed integers
-    Vec4i EncVec4i => { Uniform, [i32; 4] },
+    EncVec4i => [i32; 4],
     /// A vector of 2 signed integers
-    Vec2i EncVec2i => { Uniform, [i32; 2] },
+    EncVec2i => [i32; 2],
     /// A vector of 4x4 signed integers
-    Mat4x4i EncMat4x4i => { Uniform, [[i32; 4]; 4] },
+    EncMat4x4i => [[i32; 4]; 4],
     /// A vector of 4 unsigned integers
-    Vec4u EncVec4u => { Uniform, [u32; 4] },
+    EncVec4u => [u32; 4],
     /// A vector of 2 unsigned integers
-    Vec2u EncVec2u => { Uniform, [u32; 2] },
+    EncVec2u => [u32; 2],
     /// A matrix of 4x4 unsigned integers
-    Mat4x4u EncMat4x4u => { Uniform, [[u32; 4]; 4] },
-
-    // TODO: support non-uniform data
-    // /// A 2d texture
-    // Texture EncTexture => { Attribute, Handle<Texture> },
-    // /// A mesh (list of vertex attributes)
-    // Mesh EncMesh => { Attribute, Handle<Mesh> },
+    EncMat4x4u => [[u32; 4]; 4],
+    /// A 2d texture
+    EncTexture => Handle<Texture>,
 }
 
 /// Combined type that maps a shader attribute layout (a tuple of `ShaderInputType`s)
@@ -158,13 +233,20 @@ pub trait EncodingValue {
     fn resolve(optional: Self::OptValue, fallback: Self::Value) -> Self::Value;
 }
 
+impl EncodingValue for () {
+    type Value = ();
+    type OptValue = ();
+    fn resolve(_: Self::OptValue, _: Self::Value) -> Self::Value {
+        ()
+    }
+}
+
 impl<A> EncodingValue for A
 where
     A: ShaderInputType,
 {
     type Value = A::Repr;
     type OptValue = Option<A::Repr>;
-    // type Resolved = Self::Value;
     fn resolve(optional: Self::OptValue, fallback: Self::Value) -> Self::Value {
         optional.unwrap_or(fallback)
     }
@@ -218,6 +300,17 @@ pub trait EncProperties {
     }
 }
 
+impl EncProperties for () {
+    type EncodedType = ();
+    type PropsIter = Empty<EncodedProp>;
+    fn get_props() -> Self::PropsIter {
+        empty()
+    }
+    fn fallback() -> () {
+        ()
+    }
+}
+
 impl<A: EncProperty> EncProperties for A {
     type EncodedType = A::EncodedType;
     type PropsIter = Once<EncodedProp>;
@@ -268,14 +361,38 @@ macro_rules! impl_tuple_properties {
         }
 
         impl<$($from,)*> IterableEncoding for ($($from),*,)
-        where $($from: IterableEncoding),*,
+            where $($from: IterableEncoding),*,
         {
             #[inline(always)]
-            fn for_each_buffer_internal<FN: FnMut(usize, &[u8])>(self, idx: usize, f: FN) -> (usize, FN) {
+            fn ubo_size() -> usize {
+                let size = 0;
+                $(let size = size + $from::ubo_size();)*
+                size
+            }
+            #[inline(always)]
+            fn for_each_buffer_internal<FN: FnMut(usize, &[u8])>(&self, idx: usize, f: FN) -> (usize, FN) {
                 $(let (idx, f) = self.$idx.for_each_buffer_internal(idx, f);)*
                 (idx, f)
             }
+            #[inline(always)]
+            fn num_descriptors() -> usize {
+                let sum = 0;
+                $(let sum = sum + $from::num_descriptors();)*
+                sum
+            }
+            #[inline(always)]
+            fn for_each_descriptor_internal<FN>(self, idx: usize, f: FN) -> (usize, FN)
+            where
+                FN: FnMut(usize, EncodedDescriptor),
+            {
+                $(let (idx, f) = self.$idx.for_each_descriptor_internal(idx, f);)*
+                (idx, f)
+            }
         }
+
+        impl<$($from,)*> PerInstanceValue for ($($from),*,)
+            where $($from: EncodingValue + PerInstanceValue),*,
+        {}
 
         impl<$($from,)*> EncodingValue for ($($from),*,)
             where $($from: EncodingValue),*,

@@ -1,140 +1,87 @@
-use super::EncodingLayout;
-use crate::encoding::pipeline::EncoderPipeline;
-use amethyst_core::specs::{Component, Entity, SystemData};
-use amethyst_core::specs::{Entities, Join, ReadStorage};
+use crate::encoding::EncoderPipeline;
+use amethyst_core::specs::{Component, Entities, Entity, Join, ReadStorage, SystemData};
 use fnv::FnvHashMap;
+use gfx_hal::Backend;
 use shred::Resources;
-use std::collections::hash_map::Entry;
-use std::hash::Hash;
-use std::marker::PhantomData;
+use std::{collections::hash_map::Entry, hash::Hash};
 
-pub trait PipelinesResolver {
-    fn resolve(&mut self, res: &Resources) -> Vec<EncoderPipeline>;
+/// The most general pipeline resolver trait. Used during first stage of encoding to
+/// retreive list of pipelines that will be rendered in the render pass.
+pub trait PipelineListResolver: std::fmt::Debug + Send + Sync {
+    /// resolver name
+    fn name() -> &'static str;
+    /// Resolve a list of pipelines from world
+    fn resolve<B: Backend>(&mut self, res: &Resources) -> Vec<EncoderPipeline<B>>;
 }
 
-pub enum LayoutResolution {
+pub enum PipelineResolution<B: Backend> {
     Skip,
-    NewLayout {
-        layout: EncodingLayout,
-        batch: usize,
-    },
-    ReuseLayout {
-        index: usize,
-        batch: usize,
-    },
+    NewPipeline { pipeline: EncoderPipeline<B> },
+    KnownPipeline { index: usize },
 }
 
-/// Ability to resolve pipeline layout based on a component or optionally on other parts of the entity. Used in the first phase of world encoding.
-pub trait LayoutResolver {
+/// Ability to resolve pipeline based on a component or optionally on other parts of the entity. Used in the first phase of world encoding.
+pub trait SimplePipelineResolver: std::fmt::Debug + Send + Sync {
+    /// Component that is iterated for pipeline resolution.
     type Component: Component;
-    type LayoutCacheKey: Hash + Eq;
-    type Batch: Hash + Eq;
+    /// Type used for deduplication of pipelines
+    type PipelineUniqKey: Hash + Eq + std::fmt::Debug + Send + Sync;
+
+    /// resolver name
+    fn name() -> &'static str;
+
     /// Resolve a pipeline from the world based on a component information
-    fn resolve(
+    fn resolve<B: Backend>(
         &self,
         component: &Self::Component,
         entity: &Entity,
         res: &Resources,
-    ) -> Option<EncodingLayout>;
-    fn batch(&self, component: &Self::Component, entity: &Entity, res: &Resources) -> Self::Batch;
-    fn layout_key(
+    ) -> Option<EncoderPipeline<B>>;
+    /// Get the unique key for resolved pipeline. Only one pipeline will be resolved for every unique key.
+    fn pipeline_key(
         &self,
         component: &Self::Component,
         entity: &Entity,
         res: &Resources,
-    ) -> Self::LayoutCacheKey;
+    ) -> Self::PipelineUniqKey;
 }
 
-pub struct FnLayoutResolver<C, B, K, ResFn, BatchFn, KeyFn>
-where
-    C: Component,
-    B: Hash + Eq,
-    K: Hash + Eq,
-    ResFn: Fn(&C, &Entity, &Resources) -> Option<EncodingLayout>,
-    BatchFn: Fn(&C, &Entity, &Resources) -> B,
-    KeyFn: Fn(&C, &Entity, &Resources) -> K,
-{
-    res_fn: ResFn,
-    batch_fn: BatchFn,
-    key_fn: KeyFn,
-    marker: PhantomData<(C, B, K)>,
-}
-
-impl<C, B, K, ResFn, BatchFn, KeyFn> FnLayoutResolver<C, B, K, ResFn, BatchFn, KeyFn>
-where
-    C: Component,
-    B: Hash + Eq,
-    K: Hash + Eq,
-    ResFn: Fn(&C, &Entity, &Resources) -> Option<EncodingLayout>,
-    BatchFn: Fn(&C, &Entity, &Resources) -> B,
-    KeyFn: Fn(&C, &Entity, &Resources) -> K,
-{
-    /// Create new FnLayoutResolver using three provided methods
-    pub fn new(res: ResFn, batch: BatchFn, key: KeyFn) -> Self {
-        Self {
-            res_fn: res,
-            batch_fn: batch,
-            key_fn: key,
-            marker: PhantomData,
-        }
-    }
-}
-impl<C, B, K, ResFn, BatchFn, KeyFn> LayoutResolver
-    for FnLayoutResolver<C, B, K, ResFn, BatchFn, KeyFn>
-where
-    C: Component,
-    B: Hash + Eq,
-    K: Hash + Eq,
-    ResFn: Fn(&C, &Entity, &Resources) -> Option<EncodingLayout>,
-    BatchFn: Fn(&C, &Entity, &Resources) -> B,
-    KeyFn: Fn(&C, &Entity, &Resources) -> K,
-{
-    type Component = C;
-    type LayoutCacheKey = K;
-    type Batch = B;
-    /// Resolve a pipeline from the world based on a component information
-    fn resolve(&self, c: &Self::Component, e: &Entity, r: &Resources) -> Option<EncodingLayout> {
-        (self.res_fn)(c, e, r)
-    }
-    fn batch(&self, c: &Self::Component, e: &Entity, r: &Resources) -> Self::Batch {
-        (self.batch_fn)(c, e, r)
-    }
-    fn layout_key(&self, c: &Self::Component, e: &Entity, r: &Resources) -> Self::LayoutCacheKey {
-        (self.key_fn)(c, e, r)
-    }
-}
-
-pub trait CachedLayoutResolver {
+pub trait CachedPipelineResolver: std::fmt::Debug + Send + Sync {
     type Component: Component;
+    /// resolver name
+    fn name() -> &'static str;
     fn clear(&mut self);
-    fn resolve(
+    fn resolve<B: Backend>(
         &mut self,
         component: &Self::Component,
         entity: &Entity,
         res: &Resources,
-    ) -> LayoutResolution;
+    ) -> PipelineResolution<B>;
 }
 
-impl<R: CachedLayoutResolver> PipelinesResolver for R {
-    fn resolve(&mut self, res: &Resources) -> Vec<EncoderPipeline> {
-        let mut pipelines: Vec<EncoderPipeline> = vec![];
+impl<R: CachedPipelineResolver> PipelineListResolver for R {
+    fn name() -> &'static str {
+        R::name()
+    }
+
+    fn resolve<B: Backend>(&mut self, res: &Resources) -> Vec<EncoderPipeline<B>> {
+        let mut pipelines: Vec<EncoderPipeline<B>> = vec![];
 
         let component_storage = <ReadStorage<'_, R::Component>>::fetch(res);
         let entities = <Entities<'_>>::fetch(res);
 
         for (component, entity) in (&component_storage, &entities).join() {
             match R::resolve(self, component, &entity, res) {
-                LayoutResolution::Skip => {}
-                LayoutResolution::NewLayout { layout, batch } => {
-                    let mut pipeline = EncoderPipeline::with_layout(layout);
-                    pipeline.add_id(entity.id(), batch);
+                PipelineResolution::Skip => {}
+                PipelineResolution::NewPipeline { mut pipeline } => {
+                    pipeline.add_id(entity.id());
                     pipelines.push(pipeline);
                 }
-                LayoutResolution::ReuseLayout { index, batch } => {
+                PipelineResolution::KnownPipeline { index } => {
                     let pipeline = pipelines
                         .get_mut(index)
-                        .expect("ReuseLayout index is incorrect");
-                    pipeline.add_id(entity.id(), batch);
+                        .expect("KnownPipeline index is incorrect");
+                    pipeline.add_id(entity.id());
                 }
             };
         }
@@ -143,150 +90,63 @@ impl<R: CachedLayoutResolver> PipelinesResolver for R {
     }
 }
 
-pub struct ConstLayoutResolver<T: Component> {
-    marker: PhantomData<T>,
-    layout: EncodingLayout,
-    resolved_once: bool,
-}
-
-impl<T: Component> CachedLayoutResolver for ConstLayoutResolver<T> {
-    type Component = T;
-    fn clear(&mut self) {
-        self.resolved_once = false;
-    }
-    fn resolve(&mut self, _: &T, _: &Entity, _: &Resources) -> LayoutResolution {
-        if self.resolved_once {
-            LayoutResolution::ReuseLayout { index: 0, batch: 0 }
-        } else {
-            self.resolved_once = true;
-            LayoutResolution::NewLayout {
-                layout: self.layout.clone(),
-                batch: 0,
-            }
-        }
-    }
-}
-
-pub struct ResolverCacheLayer<R: LayoutResolver> {
+/// A pipeline resolution layer that provides caching required for simple resolvers to function property.
+/// This layer adds a guarantee that for given cache key only single pipeline will ever be resolved.
+#[derive(Debug)]
+pub struct ResolverCacheLayer<R: SimplePipelineResolver> {
     inner: R,
-    layout_cache: FnvHashMap<R::LayoutCacheKey, Option<usize>>,
-    batch_index: FnvHashMap<R::Batch, usize>,
-    next_layout: usize,
-    next_batch: usize,
+    pipeline_index_cache: FnvHashMap<R::PipelineUniqKey, Option<usize>>,
+    next_pipeline: usize,
 }
 
-impl<R: LayoutResolver> ResolverCacheLayer<R> {
+impl<R: SimplePipelineResolver> ResolverCacheLayer<R> {
     pub fn new(inner: R) -> Self {
         ResolverCacheLayer {
             inner,
-            layout_cache: Default::default(),
-            batch_index: Default::default(),
-            next_layout: 0,
-            next_batch: 0,
-        }
-    }
-
-    fn resolve_batch(
-        &mut self,
-        component: &R::Component,
-        entity: &Entity,
-        res: &Resources,
-    ) -> usize {
-        match self
-            .batch_index
-            .entry(self.inner.batch(component, entity, res))
-        {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                let idx = self.next_batch;
-                self.next_batch += 1;
-                entry.insert(idx);
-                idx
-            }
+            pipeline_index_cache: Default::default(),
+            next_pipeline: 0,
         }
     }
 }
 
-impl<R: LayoutResolver> CachedLayoutResolver for ResolverCacheLayer<R> {
+impl<R: SimplePipelineResolver> CachedPipelineResolver for ResolverCacheLayer<R> {
     type Component = R::Component;
-    fn clear(&mut self) {
-        self.next_layout = 0;
-        self.next_batch = 0;
-        self.layout_cache.clear();
-        self.batch_index.clear();
+
+    fn name() -> &'static str {
+        R::name()
     }
-    fn resolve(
+
+    fn clear(&mut self) {
+        self.next_pipeline = 0;
+        self.pipeline_index_cache.clear();
+    }
+    fn resolve<B: Backend>(
         &mut self,
         component: &R::Component,
         entity: &Entity,
         res: &Resources,
-    ) -> LayoutResolution {
+    ) -> PipelineResolution<B> {
         match self
-            .layout_cache
-            .entry(self.inner.layout_key(component, entity, res))
+            .pipeline_index_cache
+            .entry(self.inner.pipeline_key(component, entity, res))
         {
             Entry::Occupied(entry) => {
                 if let Some(index) = *entry.get() {
-                    LayoutResolution::ReuseLayout {
-                        index,
-                        batch: self.resolve_batch(component, entity, res),
-                    }
+                    PipelineResolution::KnownPipeline { index }
                 } else {
-                    LayoutResolution::Skip
+                    PipelineResolution::Skip
                 }
             }
             Entry::Vacant(entry) => {
-                if let Some(layout) = self.inner.resolve(component, entity, res) {
-                    entry.insert(Some(self.next_layout));
-                    self.next_layout += 1;
-                    LayoutResolution::NewLayout {
-                        layout,
-                        batch: self.resolve_batch(component, entity, res),
-                    }
+                if let Some(pipeline) = self.inner.resolve(component, entity, res) {
+                    entry.insert(Some(self.next_pipeline));
+                    self.next_pipeline += 1;
+                    PipelineResolution::NewPipeline { pipeline }
                 } else {
                     entry.insert(None);
-                    LayoutResolution::Skip
+                    PipelineResolution::Skip
                 }
             }
         }
-    }
-}
-
-impl<T: Component> From<EncodingLayout> for ConstLayoutResolver<T> {
-    fn from(layout: EncodingLayout) -> Self {
-        ConstLayoutResolver {
-            marker: PhantomData,
-            layout,
-            resolved_once: false,
-        }
-    }
-}
-
-impl<R: LayoutResolver> From<R> for ResolverCacheLayer<R> {
-    fn from(inner: R) -> Self {
-        ResolverCacheLayer::new(inner)
-    }
-}
-
-pub trait IntoPipelinesResolver {
-    type Resolver: PipelinesResolver;
-    fn into(self) -> Self::Resolver;
-}
-
-impl<R> IntoPipelinesResolver for R
-where
-    R: LayoutResolver,
-    R: Into<ResolverCacheLayer<R>>,
-{
-    type Resolver = ResolverCacheLayer<R>;
-    fn into(self) -> Self::Resolver {
-        self.into()
-    }
-}
-
-impl<T: Component> IntoPipelinesResolver for ConstLayoutResolver<T> {
-    type Resolver = ConstLayoutResolver<T>;
-    fn into(self) -> Self::Resolver {
-        self
     }
 }

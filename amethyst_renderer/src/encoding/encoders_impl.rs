@@ -1,7 +1,7 @@
 // example implementations
 use super::{
+    encoder::{EncodeLoop, LoopResult, LoopingInstanceEncoder},
     properties_impl::{DirXProperty, DirYProperty, Pos2DProperty, TintProperty},
-    stream_encoder::{EncodeLoop, LoopResult, LoopingStreamEncoder},
     Encode,
 };
 use crate::{Rgba, SpriteRender, SpriteSheet};
@@ -10,8 +10,9 @@ use amethyst_core::{nalgebra::Vector4, specs::Read, GlobalTransform};
 
 /// An encoder that encodes `Rgba` component into a stream of `vec4 tint`.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct RgbaTintEncoder;
-impl<'a> LoopingStreamEncoder<'a> for RgbaTintEncoder {
+impl<'a> LoopingInstanceEncoder<'a> for RgbaTintEncoder {
     type Properties = (TintProperty,);
     type Components = (Encode<Rgba>,);
     type SystemData = ();
@@ -27,11 +28,12 @@ impl<'a> LoopingStreamEncoder<'a> for RgbaTintEncoder {
     }
 }
 
-/// An encoder that encodes `GlobalTransform` and `RenderSpriteFlat2D` components
+/// An encoder that encodes `GlobalTransform` and `SpriteRender` components
 /// into streams of `vec4 pos`, `vec4 dir_x` and `vec4 dir_y`.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub struct SpriteTransformEncoder;
-impl<'a> LoopingStreamEncoder<'a> for SpriteTransformEncoder {
+impl<'a> LoopingInstanceEncoder<'a> for SpriteTransformEncoder {
     type Properties = (Pos2DProperty, DirXProperty, DirYProperty);
     type Components = (Encode<GlobalTransform>, Encode<SpriteRender>);
     type SystemData = (Read<'a, AssetStorage<SpriteSheet>>);
@@ -50,12 +52,6 @@ impl<'a> LoopingStreamEncoder<'a> for SpriteTransformEncoder {
                 let pos =
                     transform.0 * Vector4::new(-sprite.offsets[0], -sprite.offsets[1], 0.0, 1.0);
                 (Some(pos.into()), Some(dir_x.into()), Some(dir_y.into()))
-            // let t = transform.0;
-            // (
-            //     Some([t[0], t[1], t[2], t[3]]),
-            //     Some([t[4], t[5], t[6], t[7]]),
-            //     Some([t[8], t[9], t[10], t[11]]),
-            // )
             } else {
                 (None, None, None)
             }
